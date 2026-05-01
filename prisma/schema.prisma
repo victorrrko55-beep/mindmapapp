@@ -1,0 +1,143 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProjectStatus {
+  DRAFT
+  IN_PROGRESS
+  READY_FOR_REVIEW
+  FINALIZED
+}
+
+enum BriefStatus {
+  DRAFT
+  FINAL
+}
+
+enum Confidence {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model User {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  name      String?
+  projects  Project[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Project {
+  id               String         @id @default(cuid())
+  ownerId          String
+  owner            User           @relation(fields: [ownerId], references: [id])
+
+  name             String
+  companyName      String
+  projectType      String
+  description      String?
+
+  status           ProjectStatus  @default(DRAFT)
+  currentVersionId String?
+
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  versions         BriefVersion[]
+  activities       ProjectActivity[]
+
+  @@index([ownerId, updatedAt])
+}
+
+model BriefVersion {
+  id                      String      @id @default(cuid())
+  projectId               String
+  project                 Project     @relation(fields: [projectId], references: [id])
+
+  versionNumber           Int
+  status                  BriefStatus @default(DRAFT)
+
+  productService          String?
+  industryCategory        String?
+  geographyMarket         String?
+
+  primaryGoal             String?
+  whyNow                  String?
+  desiredOutcome          String?
+  timeline                String?
+  budgetRange             String?
+  decisionDeadline        DateTime?
+
+  marketDescription       String?
+  trends                  Json?
+  competitors             Json?
+  currentPosition         String?
+  currentChallenges       Json?
+  opportunities           Json?
+
+  likelyTarget            String?
+  customerKnowledge       String?
+  painPoints              Json?
+  buyingTriggers          Json?
+  channelIdeas            Json?
+
+  budgetConstraints       Json?
+  teamConstraints         Json?
+  operationalConstraints  Json?
+  regulatoryConstraints   Json?
+
+  primaryKpi              String?
+  supportingKpis          Json?
+  minimumSuccessThreshold String?
+  riskIndicators          Json?
+  failureConditions       Json?
+
+  readinessScore          Int?
+  qualityStatus           String?
+  structuredBrief         Json?
+  summaryMarkdown         String?
+
+  createdAt               DateTime    @default(now())
+  updatedAt               DateTime    @updatedAt
+
+  assumptions             Assumption[]
+
+  @@unique([projectId, versionNumber])
+  @@index([projectId, status])
+}
+
+model Assumption {
+  id             String       @id @default(cuid())
+  briefVersionId String
+  briefVersion   BriefVersion @relation(fields: [briefVersionId], references: [id])
+
+  text           String
+  confidence     Confidence
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([briefVersionId])
+}
+
+model ProjectActivity {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id])
+
+  actorId    String?
+  type       String
+  message    String
+  metadata   Json?
+
+  createdAt  DateTime @default(now())
+
+  @@index([projectId, createdAt])
+}
