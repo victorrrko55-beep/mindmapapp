@@ -11,28 +11,43 @@ type MindMapNode = {
   y?: number;
 };
 
+type MindMapDocument = {
+  title: string;
+  nodes: MindMapNode[];
+};
+
 type PositionedNode = MindMapNode & {
   x: number;
   y: number;
 };
 
+type CloudMapSummary = {
+  id: string;
+  title: string;
+  updatedAt: string;
+};
+
 const HORIZONTAL_GAP = 260;
 const VERTICAL_GAP = 112;
-const STORAGE_KEY = "building-mind-map.v1";
 const NODE_WIDTH = 180;
 const NODE_HEIGHT = 60;
-const INITIAL_NODES: MindMapNode[] = [
-  { id: "root", label: "Building Mind Map", parentId: null },
-  { id: "ideas", label: "Core Ideas", parentId: "root" },
-  { id: "ux", label: "User Experience", parentId: "root" },
-  { id: "features", label: "Features", parentId: "root" },
-  { id: "capture", label: "Quick capture", parentId: "ideas" },
-  { id: "organize", label: "Organize thoughts", parentId: "ideas" },
-  { id: "drag", label: "Drag nodes", parentId: "ux" },
-  { id: "focus", label: "Focus mode", parentId: "ux" },
-  { id: "share", label: "Share maps", parentId: "features" },
-  { id: "export", label: "Export JSON", parentId: "features" },
-];
+const STORAGE_KEY = "building-mind-map.v2";
+const PROFILE_KEY = "building-mind-map.profile";
+const INITIAL_DOCUMENT: MindMapDocument = {
+  title: "Building Mind Map",
+  nodes: [
+    { id: "root", label: "Building Mind Map", parentId: null },
+    { id: "ideas", label: "Core Ideas", parentId: "root" },
+    { id: "ux", label: "User Experience", parentId: "root" },
+    { id: "features", label: "Features", parentId: "root" },
+    { id: "capture", label: "Quick capture", parentId: "ideas" },
+    { id: "organize", label: "Organize thoughts", parentId: "ideas" },
+    { id: "drag", label: "Drag nodes", parentId: "ux" },
+    { id: "focus", label: "Focus mode", parentId: "ux" },
+    { id: "share", label: "Share maps", parentId: "features" },
+    { id: "export", label: "Export JSON", parentId: "features" },
+  ],
+};
 
 function createId() {
   return `node-${Math.random().toString(36).slice(2, 9)}`;
@@ -74,13 +89,43 @@ function normalizeNodes(value: unknown) {
     y: typeof node.y === "number" ? node.y : undefined,
   }));
 
-  const rootNodes = normalized.filter((node) => node.parentId === null);
-
-  if (rootNodes.length === 0) {
+  if (!normalized.some((node) => node.parentId === null)) {
     normalized[0] = { ...normalized[0], parentId: null };
   }
 
   return normalized;
+}
+
+function normalizeDocument(value: unknown): MindMapDocument | null {
+  if (Array.isArray(value)) {
+    const nodes = normalizeNodes(value);
+
+    return nodes
+      ? {
+          title: nodes.find((node) => node.parentId === null)?.label ?? "My Mind Map",
+          nodes,
+        }
+      : null;
+  }
+
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<MindMapDocument>;
+  const nodes = normalizeNodes(candidate.nodes);
+
+  if (!nodes) {
+    return null;
+  }
+
+  return {
+    title:
+      typeof candidate.title === "string" && candidate.title.trim()
+        ? candidate.title.trim()
+        : nodes.find((node) => node.parentId === null)?.label ?? "My Mind Map",
+    nodes,
+  };
 }
 
 function buildLayout(nodes: MindMapNode[]) {
@@ -163,16 +208,30 @@ function collectDescendantIds(nodes: MindMapNode[], targetId: string) {
   return ids;
 }
 
+function upsertSummary(items: CloudMapSummary[], nextItem: CloudMapSummary) {
+  const remaining = items.filter((item) => item.id !== nextItem.id);
+  return [nextItem, ...remaining].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
 export default function HomePage() {
-  const [nodes, setNodes] = useState<MindMapNode[]>(INITIAL_NODES);
+  const [title, setTitle] = useState(INITIAL_DOCUMENT.title);
+  const [nodes, setNodes] = useState<MindMapNode[]>(INITIAL_DOCUMENT.nodes);
   const [selectedId, setSelectedId] = useState<string>("root");
-  const [draftLabel, setDraftLabel] = useState("Building Mind Map");
+  const [draftLabel, setDraftLabel] = useState(INITIAL_DOCUMENT.nodes[0]?.label ?? "");
   const [importValue, setImportValue] = useState("");
-  const [statusMessage, setStatusMessage] = useState("Map autosaves in your browser.");
+  const [statusMessage, setStatusMessage] = useState("Map autosaves in this browser.");
   const [hasLoaded, setHasLoaded] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [syncEnabled, setSyncEnabled] = useState(false);
+  const [cloudMaps, setCloudMaps] = useState<CloudMapSummary[]>([]);
+  const [activeCloudMapId, setActiveCloudMapId] = useState<string | null>(null);
+  const [cloudStatus, setCloudStatus] = useState("Cloud sync is off.");
+
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const skipCloudSaveRef = useRef(false);
 
   const layout = useMemo(() => buildLayout(nodes), [nodes]);
   const positionedById = useMemo(
@@ -182,6 +241,9 @@ export default function HomePage() {
   const selectedNode = nodes.find((node) => node.id === selectedId) ?? null;
   const rootCount = nodes.filter((node) => node.parentId === null).length;
   const leafCount = nodes.filter((node) => !nodes.some((item) => item.parentId === node.id)).length;
+  const manualPositionCount = nodes.filter(
+    (node) => typeof node.x === "number" && typeof node.y === "number"
+  ).length;
   const maxDepth = nodes.reduce((max, node) => {
     let depth = 0;
     let cursor = node.parentId;
@@ -199,35 +261,47 @@ export default function HomePage() {
 
     return Math.max(max, depth);
   }, 0);
-  const manualPositionCount = nodes.filter(
-    (node) => typeof node.x === "number" && typeof node.y === "number"
-  ).length;
 
   useEffect(() => {
     setDraftLabel(selectedNode?.label ?? "");
   }, [selectedNode]);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
+    const storedDocument = window.localStorage.getItem(STORAGE_KEY);
+    const storedProfile = window.localStorage.getItem(PROFILE_KEY);
 
-    if (!stored) {
-      setHasLoaded(true);
-      return;
+    if (storedDocument) {
+      try {
+        const parsed = JSON.parse(storedDocument);
+        const normalized = normalizeDocument(parsed);
+
+        if (normalized) {
+          setTitle(normalized.title);
+          setNodes(normalized.nodes);
+          setSelectedId(normalized.nodes[0]?.id ?? "root");
+          setStatusMessage("Loaded your saved local mind map.");
+        }
+      } catch {
+        setStatusMessage("Saved local data could not be read, so the starter map was loaded.");
+      }
     }
 
-    try {
-      const parsed = JSON.parse(stored);
-      const normalized = normalizeNodes(parsed);
+    if (storedProfile) {
+      try {
+        const parsed = JSON.parse(storedProfile) as {
+          email?: string;
+          name?: string;
+          syncEnabled?: boolean;
+          activeCloudMapId?: string | null;
+        };
 
-      if (normalized) {
-        setNodes(normalized);
-        setSelectedId(normalized[0]?.id ?? "root");
-        setStatusMessage("Loaded your last saved map.");
-      } else {
-        setStatusMessage("Saved data was invalid, so the demo map was loaded.");
+        setEmail(parsed.email ?? "");
+        setName(parsed.name ?? "");
+        setSyncEnabled(Boolean(parsed.syncEnabled && parsed.email));
+        setActiveCloudMapId(parsed.activeCloudMapId ?? null);
+      } catch {
+        setCloudStatus("Saved account details could not be read.");
       }
-    } catch {
-      setStatusMessage("Saved data could not be read, so the demo map was loaded.");
     }
 
     setHasLoaded(true);
@@ -238,8 +312,187 @@ export default function HomePage() {
       return;
     }
 
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nodes));
-  }, [hasLoaded, nodes]);
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ title, nodes }));
+    window.localStorage.setItem(
+      PROFILE_KEY,
+      JSON.stringify({
+        email,
+        name,
+        syncEnabled,
+        activeCloudMapId,
+      })
+    );
+  }, [activeCloudMapId, email, hasLoaded, name, nodes, syncEnabled, title]);
+
+  async function authorizedFetch(input: string, init?: RequestInit) {
+    const headers = new Headers(init?.headers);
+
+    if (email.trim()) {
+      headers.set("x-user-email", email.trim().toLowerCase());
+      if (name.trim()) {
+        headers.set("x-user-name", name.trim());
+      }
+    }
+
+    return fetch(input, {
+      ...init,
+      headers,
+    });
+  }
+
+  async function fetchCloudMaps() {
+    if (!email.trim()) {
+      return;
+    }
+
+    const response = await authorizedFetch("/api/mind-maps");
+    const body = (await response.json()) as {
+      items?: CloudMapSummary[];
+      error?: string;
+    };
+
+    if (!response.ok) {
+      throw new Error(body.error ?? "Could not load cloud maps.");
+    }
+
+    const items = body.items ?? [];
+    setCloudMaps(items);
+
+    if (!activeCloudMapId && items[0]) {
+      setActiveCloudMapId(items[0].id);
+    }
+
+    setCloudStatus(items.length > 0 ? "Cloud maps loaded." : "Connected. No cloud maps yet.");
+  }
+
+  async function enableCloudSync() {
+    if (!email.trim()) {
+      setCloudStatus("Add an email address first.");
+      return;
+    }
+
+    setSyncEnabled(true);
+    setCloudStatus("Connecting to cloud sync...");
+
+    try {
+      await fetchCloudMaps();
+    } catch (error) {
+      setCloudStatus(error instanceof Error ? error.message : "Cloud sync failed.");
+    }
+  }
+
+  async function saveCurrentMapToCloud(mapId?: string | null) {
+    if (!email.trim()) {
+      setCloudStatus("Add an email address before saving to the cloud.");
+      return null;
+    }
+
+    const payload = {
+      title: title.trim() || "My Mind Map",
+      nodes,
+    };
+
+    const response = await authorizedFetch(mapId ? `/api/mind-maps/${mapId}` : "/api/mind-maps", {
+      method: mapId ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = (await response.json()) as {
+      map?: { id: string; title: string; updatedAt: string; nodes: MindMapNode[] };
+      error?: string;
+    };
+
+    if (!response.ok || !body.map) {
+      throw new Error(body.error ?? "Cloud save failed.");
+    }
+
+    setActiveCloudMapId(body.map.id);
+    setCloudMaps((current) =>
+      upsertSummary(current, {
+        id: body.map!.id,
+        title: body.map!.title,
+        updatedAt: body.map!.updatedAt,
+      })
+    );
+    setCloudStatus(`Cloud saved at ${new Date(body.map.updatedAt).toLocaleString()}.`);
+    return body.map.id;
+  }
+
+  async function loadCloudMap(mapId: string) {
+    const response = await authorizedFetch(`/api/mind-maps/${mapId}`);
+    const body = (await response.json()) as {
+      map?: { id: string; title: string; nodes: unknown; updatedAt: string };
+      error?: string;
+    };
+
+    if (!response.ok || !body.map) {
+      throw new Error(body.error ?? "Could not load cloud map.");
+    }
+
+    const normalized = normalizeDocument({
+      title: body.map.title,
+      nodes: body.map.nodes,
+    });
+
+    if (!normalized) {
+      throw new Error("Cloud map data was invalid.");
+    }
+
+    skipCloudSaveRef.current = true;
+    setTitle(normalized.title);
+    setNodes(normalized.nodes);
+    setSelectedId(normalized.nodes[0]?.id ?? "root");
+    setActiveCloudMapId(body.map.id);
+    setCloudStatus(`Loaded cloud map updated ${new Date(body.map.updatedAt).toLocaleString()}.`);
+  }
+
+  async function deleteCloudMap(mapId: string) {
+    const response = await authorizedFetch(`/api/mind-maps/${mapId}`, {
+      method: "DELETE",
+    });
+    const body = (await response.json()) as {
+      success?: boolean;
+      error?: string;
+    };
+
+    if (!response.ok || !body.success) {
+      throw new Error(body.error ?? "Could not delete cloud map.");
+    }
+
+    const remaining = cloudMaps.filter((item) => item.id !== mapId);
+    setCloudMaps(remaining);
+    setActiveCloudMapId(remaining[0]?.id ?? null);
+    setCloudStatus("Deleted the cloud map.");
+  }
+
+  useEffect(() => {
+    if (!hasLoaded || !syncEnabled || !email.trim() || !activeCloudMapId) {
+      return;
+    }
+
+    if (skipCloudSaveRef.current) {
+      skipCloudSaveRef.current = false;
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      saveCurrentMapToCloud(activeCloudMapId).catch((error) => {
+        setCloudStatus(error instanceof Error ? error.message : "Autosync failed.");
+      });
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [activeCloudMapId, email, hasLoaded, nodes, syncEnabled, title]);
+
+  useEffect(() => {
+    if (!syncEnabled || !email.trim()) {
+      return;
+    }
+
+    fetchCloudMaps().catch((error) => {
+      setCloudStatus(error instanceof Error ? error.message : "Could not refresh cloud maps.");
+    });
+  }, [email, syncEnabled]);
 
   useEffect(() => {
     if (!draggedId) {
@@ -288,7 +541,7 @@ export default function HomePage() {
     const handler = (event: KeyboardEvent) => {
       const tagName = (event.target as HTMLElement | null)?.tagName;
 
-      if (tagName === "INPUT" || tagName === "TEXTAREA") {
+      if (tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT") {
         return;
       }
 
@@ -304,15 +557,20 @@ export default function HomePage() {
 
       if (event.key.toLowerCase() === "s" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nodes));
-        setStatusMessage("Saved to this browser.");
+        if (syncEnabled && email.trim()) {
+          saveCurrentMapToCloud(activeCloudMapId).catch((error) => {
+            setCloudStatus(error instanceof Error ? error.message : "Cloud save failed.");
+          });
+        } else {
+          setStatusMessage("Saved locally in this browser.");
+        }
       }
     };
 
     window.addEventListener("keydown", handler);
 
     return () => window.removeEventListener("keydown", handler);
-  }, [nodes, selectedNode]);
+  }, [activeCloudMapId, email, selectedNode, syncEnabled, title, nodes]);
 
   const addNode = (parentId: string | null) => {
     const newNode: MindMapNode = {
@@ -357,7 +615,9 @@ export default function HomePage() {
   };
 
   const resetDemo = () => {
-    setNodes(INITIAL_NODES);
+    skipCloudSaveRef.current = true;
+    setTitle(INITIAL_DOCUMENT.title);
+    setNodes(INITIAL_DOCUMENT.nodes);
     setSelectedId("root");
     setImportValue("");
     setStatusMessage("Reset to the starter demo map.");
@@ -365,7 +625,7 @@ export default function HomePage() {
 
   const copyJson = async () => {
     try {
-      await navigator.clipboard.writeText(JSON.stringify(nodes, null, 2));
+      await navigator.clipboard.writeText(JSON.stringify({ title, nodes }, null, 2));
       setStatusMessage("Copied map JSON to the clipboard.");
     } catch {
       setStatusMessage("Clipboard copy failed. You can still copy from the export box.");
@@ -375,15 +635,17 @@ export default function HomePage() {
   const importJson = () => {
     try {
       const parsed = JSON.parse(importValue);
-      const normalized = normalizeNodes(parsed);
+      const normalized = normalizeDocument(parsed);
 
       if (!normalized) {
-        setStatusMessage("Import failed. Please paste a valid node array.");
+        setStatusMessage("Import failed. Please paste valid map JSON.");
         return;
       }
 
-      setNodes(normalized);
-      setSelectedId(normalized[0]?.id ?? "root");
+      skipCloudSaveRef.current = true;
+      setTitle(normalized.title);
+      setNodes(normalized.nodes);
+      setSelectedId(normalized.nodes[0]?.id ?? "root");
       setStatusMessage("Imported a new map from JSON.");
     } catch {
       setStatusMessage("Import failed. The JSON could not be parsed.");
@@ -449,18 +711,20 @@ export default function HomePage() {
     setStatusMessage(`Renamed node to "${trimmed}".`);
   };
 
-  const exportPayload = JSON.stringify(nodes, null, 2);
+  const exportPayload = JSON.stringify({ title, nodes }, null, 2);
 
   return (
     <main className="page-shell">
       <section className="hero-card">
         <div>
           <p className="eyebrow">Visual Thinking App</p>
-          <h1>Building Mind Map</h1>
+          <h1>{title}</h1>
           <p className="hero-copy">
-            Sketch ideas, branch into details, and shape a concept into something you can act on.
+            Sketch ideas, branch into details, and sync them across devices once your database is
+            connected.
           </p>
           <p className="status-pill">{statusMessage}</p>
+          <p className="cloud-pill">{cloudStatus}</p>
         </div>
 
         <div className="stats-grid">
@@ -484,85 +748,190 @@ export default function HomePage() {
             <strong>{manualPositionCount}</strong>
             <span>Dragged nodes</span>
           </article>
+          <article>
+            <strong>{cloudMaps.length}</strong>
+            <span>Cloud maps</span>
+          </article>
         </div>
       </section>
 
       <section className="workspace-grid">
         <aside className="panel">
-          <h2>Editor</h2>
+          <h2>Cloud Sync</h2>
 
-          <div className="button-row">
-            <button onClick={() => addNode(selectedNode?.id ?? null)} type="button">
-              Add child
-            </button>
-            <button onClick={() => addNode(selectedNode?.parentId ?? null)} type="button">
-              Add sibling
-            </button>
-          </div>
-
-          <div className="button-row">
-            <button className="ghost-button" onClick={() => addNode(null)} type="button">
-              New root
-            </button>
-            <button className="ghost-button" onClick={resetDemo} type="button">
-              Reset demo
-            </button>
-          </div>
-
-          <label className="field-label" htmlFor="node-label">
-            Selected node
+          <label className="field-label" htmlFor="account-email">
+            Email
           </label>
           <input
-            id="node-label"
-            value={draftLabel}
-            onChange={(event) => setDraftLabel(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                saveDraftLabel();
-              }
-            }}
-            placeholder="Select a node"
+            id="account-email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="you@example.com"
+          />
+
+          <label className="field-label" htmlFor="account-name">
+            Name
+          </label>
+          <input
+            id="account-name"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Victor"
           />
 
           <div className="button-row">
-            <button onClick={saveDraftLabel} type="button">
-              Save name
+            <button onClick={enableCloudSync} type="button">
+              Enable sync
             </button>
             <button
               className="ghost-button"
-              onClick={() => setDraftLabel(selectedNode?.label ?? "")}
+              onClick={() => saveCurrentMapToCloud(activeCloudMapId).catch((error) => {
+                setCloudStatus(error instanceof Error ? error.message : "Cloud save failed.");
+              })}
               type="button"
             >
-              Revert text
+              Save now
             </button>
           </div>
 
-          <p className="helper-text">
-            Click a node, change the text here, then press `Save name` or hit `Enter`. You can also
-            double-click a node to rename it directly.
-          </p>
+          <label className="field-label" htmlFor="cloud-map-title">
+            Map title
+          </label>
+          <input
+            id="cloud-map-title"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="My Mind Map"
+          />
+
+          <label className="field-label" htmlFor="cloud-map-select">
+            Saved cloud maps
+          </label>
+          <select
+            id="cloud-map-select"
+            value={activeCloudMapId ?? ""}
+            onChange={(event) => setActiveCloudMapId(event.target.value || null)}
+          >
+            <option value="">Choose a map</option>
+            {cloudMaps.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.title}
+              </option>
+            ))}
+          </select>
+
+          <div className="button-row">
+            <button
+              className="ghost-button"
+              disabled={!activeCloudMapId}
+              onClick={() => {
+                if (!activeCloudMapId) {
+                  return;
+                }
+
+                loadCloudMap(activeCloudMapId).catch((error) => {
+                  setCloudStatus(error instanceof Error ? error.message : "Could not load cloud map.");
+                });
+              }}
+              type="button"
+            >
+              Load map
+            </button>
+            <button
+              className="ghost-button"
+              onClick={() => saveCurrentMapToCloud(null).catch((error) => {
+                setCloudStatus(error instanceof Error ? error.message : "Could not create cloud map.");
+              })}
+              type="button"
+            >
+              Save as new
+            </button>
+          </div>
 
           <button
-            className="danger-button"
-            disabled={!selectedNode}
-            onClick={deleteSelectedNode}
+            className="ghost-button full-width-button"
+            disabled={!activeCloudMapId}
+            onClick={() => {
+              if (!activeCloudMapId) {
+                return;
+              }
+
+              deleteCloudMap(activeCloudMapId).catch((error) => {
+                setCloudStatus(error instanceof Error ? error.message : "Could not delete cloud map.");
+              });
+            }}
             type="button"
           >
-            Delete branch
+            Delete selected cloud map
           </button>
 
-          <button className="ghost-button full-width-button" onClick={resetDraggedPositions} type="button">
-            Reset node positions
-          </button>
+          <p className="helper-text">
+            Use the same email on your laptop and phone. Once `DATABASE_URL` is configured in
+            production, this page can save the map into Postgres and load it on other devices.
+          </p>
 
           <div className="ideas-list">
-            <h3>Quick ideas</h3>
-            <ul>
-              <li>Use the root for the main topic.</li>
-              <li>Group related thoughts as child branches.</li>
-              <li>Break complex branches into small leaf ideas.</li>
-            </ul>
+            <h3>Editor</h3>
+
+            <div className="button-row">
+              <button onClick={() => addNode(selectedNode?.id ?? null)} type="button">
+                Add child
+              </button>
+              <button onClick={() => addNode(selectedNode?.parentId ?? null)} type="button">
+                Add sibling
+              </button>
+            </div>
+
+            <div className="button-row">
+              <button className="ghost-button" onClick={() => addNode(null)} type="button">
+                New root
+              </button>
+              <button className="ghost-button" onClick={resetDemo} type="button">
+                Reset demo
+              </button>
+            </div>
+
+            <label className="field-label" htmlFor="node-label">
+              Selected node
+            </label>
+            <input
+              id="node-label"
+              value={draftLabel}
+              onChange={(event) => setDraftLabel(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  saveDraftLabel();
+                }
+              }}
+              placeholder="Select a node"
+            />
+
+            <div className="button-row">
+              <button onClick={saveDraftLabel} type="button">
+                Save name
+              </button>
+              <button
+                className="ghost-button"
+                onClick={() => setDraftLabel(selectedNode?.label ?? "")}
+                type="button"
+              >
+                Revert text
+              </button>
+            </div>
+
+            <button
+              className="danger-button"
+              disabled={!selectedNode}
+              onClick={deleteSelectedNode}
+              type="button"
+            >
+              Delete branch
+            </button>
+
+            <button className="ghost-button full-width-button" onClick={resetDraggedPositions} type="button">
+              Reset node positions
+            </button>
           </div>
         </aside>
 
@@ -577,7 +946,7 @@ export default function HomePage() {
                 Auto layout
               </button>
               <button className="ghost-button" onClick={clearSavedMap} type="button">
-                Clear saved
+                Clear local
               </button>
             </div>
           </div>
@@ -635,8 +1004,7 @@ export default function HomePage() {
         <aside className="panel export-panel">
           <h2>Data</h2>
           <p className="helper-text">
-            The map autosaves locally in this browser. Dragged positions are saved too, and you can
-            still export the whole structure as JSON.
+            Export and import full map documents. This stays useful even after cloud sync is set up.
           </p>
 
           <label className="field-label" htmlFor="export-json">
@@ -651,7 +1019,7 @@ export default function HomePage() {
             id="import-json"
             value={importValue}
             onChange={(event) => setImportValue(event.target.value)}
-            placeholder='Paste a JSON array like [{"id":"root","label":"Topic","parentId":null}]'
+            placeholder='Paste {"title":"My Map","nodes":[...]} or a node array'
           />
 
           <div className="button-row">
@@ -716,32 +1084,40 @@ export default function HomePage() {
           margin: 0;
           font-size: clamp(2.1rem, 4vw, 3.8rem);
           line-height: 0.95;
-          max-width: 8ch;
+          max-width: 10ch;
         }
 
         .hero-copy {
-          max-width: 48ch;
+          max-width: 54ch;
           margin: 14px 0 0;
           color: #4b5563;
           font-size: 1rem;
         }
 
-        .status-pill {
+        .status-pill,
+        .cloud-pill {
           display: inline-flex;
-          margin: 18px 0 0;
+          margin: 18px 12px 0 0;
           padding: 10px 14px;
           border-radius: 999px;
           background: rgba(255, 255, 255, 0.8);
-          color: #8b4b12;
           font-size: 0.92rem;
           font-weight: 600;
+        }
+
+        .status-pill {
+          color: #8b4b12;
+        }
+
+        .cloud-pill {
+          color: #174da8;
         }
 
         .stats-grid {
           display: grid;
           grid-template-columns: repeat(2, minmax(120px, 1fr));
           gap: 12px;
-          min-width: min(360px, 100%);
+          min-width: min(420px, 100%);
         }
 
         .stats-grid article {
@@ -764,7 +1140,7 @@ export default function HomePage() {
 
         .workspace-grid {
           display: grid;
-          grid-template-columns: 280px minmax(0, 1fr) 320px;
+          grid-template-columns: 320px minmax(0, 1fr) 320px;
           gap: 20px;
           align-items: start;
         }
@@ -780,7 +1156,7 @@ export default function HomePage() {
 
         .canvas-card {
           padding: 18px;
-          min-height: 720px;
+          min-height: 760px;
         }
 
         h2,
@@ -802,7 +1178,8 @@ export default function HomePage() {
 
         button,
         input,
-        textarea {
+        textarea,
+        select {
           font: inherit;
         }
 
@@ -849,7 +1226,8 @@ export default function HomePage() {
         }
 
         input,
-        textarea {
+        textarea,
+        select {
           width: 100%;
           border: 1px solid rgba(31, 41, 55, 0.12);
           border-radius: 18px;
@@ -868,11 +1246,6 @@ export default function HomePage() {
           margin-top: 22px;
           padding-top: 18px;
           border-top: 1px solid rgba(31, 41, 55, 0.08);
-        }
-
-        .ideas-list ul {
-          padding-left: 18px;
-          margin-bottom: 0;
         }
 
         .canvas-toolbar {
@@ -960,10 +1333,10 @@ export default function HomePage() {
         }
 
         .export-panel {
-          min-height: 720px;
+          min-height: 760px;
         }
 
-        @media (max-width: 1100px) {
+        @media (max-width: 1200px) {
           .workspace-grid {
             grid-template-columns: 1fr;
           }

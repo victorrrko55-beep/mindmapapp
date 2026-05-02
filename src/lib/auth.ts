@@ -7,19 +7,25 @@ export type AuthUser = {
 };
 
 export async function requireUser(request: Request): Promise<AuthUser> {
-  const id = request.headers.get("x-user-id") ?? "dev_user";
-  const email =
-    request.headers.get("x-user-email") ?? `${id}@project-brief-builder.local`;
-  const name = request.headers.get("x-user-name");
+  const emailHeader = request.headers.get("x-user-email")?.trim().toLowerCase();
+  const name = request.headers.get("x-user-name")?.trim() || null;
+  const idHeader = request.headers.get("x-user-id")?.trim();
 
-  const user = await prisma.user.upsert({
-    where: { id },
-    create: { id, email, name },
-    update: {
-      email,
-      name,
-    },
-  });
+  const user = emailHeader
+    ? await prisma.user.upsert({
+        where: { email: emailHeader },
+        create: { email: emailHeader, name },
+        update: { name },
+      })
+    : await prisma.user.upsert({
+        where: { id: idHeader ?? "dev_user" },
+        create: {
+          id: idHeader ?? "dev_user",
+          email: `${idHeader ?? "dev_user"}@project-brief-builder.local`,
+          name,
+        },
+        update: { name },
+      });
 
   return {
     id: user.id,

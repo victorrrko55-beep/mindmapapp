@@ -42,9 +42,26 @@ To use this app outside your home network, deploy it to a public hosting service
 
 Once deployed, you can add it to your phone home screen like an app.
 
+## Cloud Sync Setup
+
+The app now includes an account-by-email cloud sync flow, but it needs a real Postgres database before it can sync across devices.
+
+1. Create a Postgres database
+2. Set `DATABASE_URL` locally and in Vercel
+3. Run:
+
+```bash
+npm run prisma:generate
+npm run prisma:push
+```
+
+4. Redeploy on Vercel after the environment variable is added
+
+Once that is done, using the same email on your laptop and phone will let you save and load cloud mind maps.
+
 ## Important Data Note
 
-Right now the app stores maps in each device's own browser storage. That means:
+Right now the app always stores a local browser copy, and cloud sync only works after the database setup above is complete. That means:
 
 - Your laptop and phone will not automatically share the same maps
 - Refreshing the page on the same device keeps your data
