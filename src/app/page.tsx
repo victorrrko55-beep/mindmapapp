@@ -15,6 +15,8 @@ type MindMapEdge = {
   id: string;
   fromNodeId: string;
   toNodeId: string;
+  controlX?: number;
+  controlY?: number;
 };
 
 type MindMapDocument = {
@@ -117,6 +119,8 @@ function normalizeEdges(value: unknown, nodes: MindMapNode[]) {
       id: typeof edge.id === "string" ? edge.id : createId(),
       fromNodeId: typeof edge.fromNodeId === "string" ? edge.fromNodeId : "",
       toNodeId: typeof edge.toNodeId === "string" ? edge.toNodeId : "",
+      controlX: typeof edge.controlX === "number" ? edge.controlX : undefined,
+      controlY: typeof edge.controlY === "number" ? edge.controlY : undefined,
     }))
     .filter(
       (edge) =>
@@ -247,6 +251,35 @@ function upsertSummary(items: CloudMapSummary[], nextItem: CloudMapSummary) {
   return [nextItem, ...remaining].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+function getCrossLinkGeometry(
+  edge: MindMapEdge,
+  positionedById: Map<string, PositionedNode>
+) {
+  const fromNode = positionedById.get(edge.fromNodeId);
+  const toNode = positionedById.get(edge.toNodeId);
+
+  if (!fromNode || !toNode) {
+    return null;
+  }
+
+  const startX = fromNode.x + NODE_WIDTH;
+  const startY = fromNode.y + NODE_HEIGHT / 2;
+  const endX = toNode.x;
+  const endY = toNode.y + NODE_HEIGHT / 2;
+  const controlX = edge.controlX ?? (startX + endX) / 2;
+  const controlY =
+    edge.controlY ?? Math.min(startY, endY) - Math.max(60, Math.abs(endX - startX) * 0.12);
+
+  return {
+    startX,
+    startY,
+    endX,
+    endY,
+    controlX,
+    controlY,
+  };
+}
+
 export default function HomePage() {
   const [title, setTitle] = useState(INITIAL_DOCUMENT.title);
   const [nodes, setNodes] = useState<MindMapNode[]>(INITIAL_DOCUMENT.nodes);
@@ -258,6 +291,7 @@ export default function HomePage() {
   const [statusMessage, setStatusMessage] = useState("Map autosaves in this browser.");
   const [hasLoaded, setHasLoaded] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [draggedEdgeId, setDraggedEdgeId] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [syncEnabled, setSyncEnabled] = useState(false);
@@ -266,6 +300,7 @@ export default function HomePage() {
   const [cloudStatus, setCloudStatus] = useState("Cloud sync is off.");
 
   const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const edgeDragOffsetRef = useRef({ x: 0, y: 0 });
   const stageRef = useRef<HTMLDivElement | null>(null);
   const skipCloudSaveRef = useRef(false);
 
@@ -585,6 +620,49 @@ export default function HomePage() {
   }, [draggedId]);
 
   useEffect(() => {
+    if (!draggedEdgeId) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const stage = stageRef.current;
+
+      if (!stage) {
+        return;
+      }
+
+      const rect = stage.getBoundingClientRect();
+      const nextX = Math.max(0, event.clientX - rect.left - edgeDragOffsetRef.current.x);
+      const nextY = Math.max(0, event.clientY - rect.top - edgeDragOffsetRef.current.y);
+
+      setEdges((current) =>
+        current.map((edge) =>
+          edge.id === draggedEdgeId
+            ? {
+                ...edge,
+                controlX: Math.round(nextX),
+                controlY: Math.round(nextY),
+              }
+            : edge
+        )
+      );
+    };
+
+    const handlePointerUp = () => {
+      setDraggedEdgeId(null);
+      setStatusMessage("Adjusted the extra connection path.");
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [draggedEdgeId]);
+
+  useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       const tagName = (event.target as HTMLElement | null)?.tagName;
 
@@ -717,7 +795,7 @@ export default function HomePage() {
 
   const copyJson = async () => {
     try {
-      await navigator.clipboard.writeText(JSON.stringify({ title, nodes }, null, 2));
+      await navigator.clipboard.writeText(JSON.stringify({ title, nodes, edges }, null, 2));
       setStatusMessage("Copied map JSON to the clipboard.");
     } catch {
       setStatusMessage("Clipboard copy failed. You can still copy from the export box.");
@@ -779,6 +857,31 @@ export default function HomePage() {
     setSelectedId(nodeId);
     setDraggedId(nodeId);
     setStatusMessage("Dragging node...");
+  };
+
+  const startEdgeDrag = (
+    event: ReactPointerEvent<SVGCircleElement>,
+    edgeId: string,
+    controlX: number,
+    controlY: number
+  ) => {
+    const stage = stageRef.current;
+
+    if (!stage) {
+      return;
+    }
+
+    event.stopPropagation();
+
+    const rect = stage.getBoundingClientRect();
+
+    edgeDragOffsetRef.current = {
+      x: event.clientX - rect.left - controlX,
+      y: event.clientY - rect.top - controlY,
+    };
+
+    setDraggedEdgeId(edgeId);
+    setStatusMessage("Dragging cross-link bend handle...");
   };
 
   const renameFromNode = (nodeId: string) => {
@@ -1068,6 +1171,11 @@ export default function HomePage() {
               )}
             </div>
 
+            <p className="helper-text">
+              Drag the small orange bend handle on the canvas to route a dashed connection around
+              crowded areas.
+            </p>
+
             <button
               className="danger-button"
               disabled={!selectedNode}
@@ -1162,23 +1270,32 @@ export default function HomePage() {
                 })}
 
                 {edges.map((edge) => {
-                  const fromNode = positionedById.get(edge.fromNodeId);
-                  const toNode = positionedById.get(edge.toNodeId);
+                  const geometry = getCrossLinkGeometry(edge, positionedById);
 
-                  if (!fromNode || !toNode) {
+                  if (!geometry) {
                     return null;
                   }
 
                   return (
-                    <path
-                      className="cross-link"
-                      key={edge.id}
-                      d={`M ${fromNode.x + NODE_WIDTH} ${fromNode.y + NODE_HEIGHT / 2} C ${
-                        fromNode.x + NODE_WIDTH + 80
-                      } ${fromNode.y + NODE_HEIGHT / 2 - 28}, ${toNode.x - 80} ${
-                        toNode.y + NODE_HEIGHT / 2 - 28
-                      }, ${toNode.x} ${toNode.y + NODE_HEIGHT / 2}`}
-                    />
+                    <g key={edge.id}>
+                      <path
+                        className="cross-link"
+                        d={`M ${geometry.startX} ${geometry.startY} Q ${geometry.controlX} ${
+                          geometry.controlY
+                        } ${geometry.endX} ${geometry.endY}`}
+                      />
+                      <circle
+                        className={`cross-link-handle ${
+                          draggedEdgeId === edge.id ? "cross-link-handle--active" : ""
+                        }`}
+                        cx={geometry.controlX}
+                        cy={geometry.controlY}
+                        onPointerDown={(event) =>
+                          startEdgeDrag(event, edge.id, geometry.controlX, geometry.controlY)
+                        }
+                        r={8}
+                      />
+                    </g>
                   );
                 })}
               </svg>
@@ -1509,6 +1626,18 @@ export default function HomePage() {
           stroke: rgba(208, 98, 38, 0.72);
           stroke-width: 3;
           stroke-dasharray: 10 9;
+        }
+
+        .cross-link-handle {
+          fill: rgba(208, 98, 38, 0.92);
+          stroke: rgba(255, 248, 234, 0.96);
+          stroke-width: 3;
+          cursor: grab;
+        }
+
+        .cross-link-handle--active {
+          cursor: grabbing;
+          fill: rgba(176, 63, 14, 0.98);
         }
 
         .mind-node {

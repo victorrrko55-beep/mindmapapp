@@ -15,6 +15,8 @@ type MindMapEdge = {
   id: string;
   fromNodeId: string;
   toNodeId: string;
+  controlX?: number;
+  controlY?: number;
 };
 
 type CreateMindMapInput = {

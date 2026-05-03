@@ -14,6 +14,8 @@ export const mindMapEdgeSchema = z.object({
   id: nonEmptyString,
   fromNodeId: nonEmptyString,
   toNodeId: nonEmptyString,
+  controlX: z.number().finite().optional(),
+  controlY: z.number().finite().optional(),
 });
 
 export const createMindMapSchema = z.object({
