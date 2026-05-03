@@ -11,18 +11,67 @@ type MindMapNode = {
   y?: number;
 };
 
+type MindMapEdge = {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+};
+
 type CreateMindMapInput = {
   title: string;
   nodes: MindMapNode[];
+  edges: MindMapEdge[];
 };
 
 type UpdateMindMapInput = {
   title?: string;
   nodes?: MindMapNode[];
+  edges?: MindMapEdge[];
 };
 
-function serializeNodes(nodes: MindMapNode[]) {
-  return nodes as Prisma.InputJsonValue;
+function serializeDocument(nodes: MindMapNode[], edges: MindMapEdge[]) {
+  return {
+    nodes,
+    edges,
+  } as Prisma.InputJsonValue;
+}
+
+function deserializeDocument(value: Prisma.JsonValue) {
+  if (Array.isArray(value)) {
+    return {
+      nodes: value,
+      edges: [],
+    };
+  }
+
+  if (value && typeof value === "object" && "nodes" in value) {
+    const document = value as {
+      nodes?: Prisma.JsonValue;
+      edges?: Prisma.JsonValue;
+    };
+
+    return {
+      nodes: Array.isArray(document.nodes) ? document.nodes : [],
+      edges: Array.isArray(document.edges) ? document.edges : [],
+    };
+  }
+
+  return {
+    nodes: [],
+    edges: [],
+  };
+}
+
+function deserializeTypedDocument(value: Prisma.JsonValue): {
+  nodes: MindMapNode[];
+  edges: MindMapEdge[];
+} {
+  const document = deserializeDocument(value);
+
+  return {
+    nodes: document.nodes as MindMapNode[],
+    edges: document.edges as MindMapEdge[],
+  };
 }
 
 function mapMindMap(item: {
@@ -32,10 +81,13 @@ function mapMindMap(item: {
   createdAt: Date;
   updatedAt: Date;
 }) {
+  const document = deserializeTypedDocument(item.nodes);
+
   return {
     id: item.id,
     title: item.title,
-    nodes: item.nodes,
+    nodes: document.nodes,
+    edges: document.edges,
     createdAt: item.createdAt.toISOString(),
     updatedAt: item.updatedAt.toISOString(),
   };
@@ -88,7 +140,7 @@ export class PrismaMindMapService {
       data: {
         ownerId,
         title: input.title,
-        nodes: serializeNodes(input.nodes),
+        nodes: serializeDocument(input.nodes, input.edges),
       },
     });
 
@@ -112,13 +164,17 @@ export class PrismaMindMapService {
   }
 
   async updateMindMap(mapId: string, ownerId: string, input: UpdateMindMapInput) {
-    await this.getMindMap(mapId, ownerId);
+    const current = await this.getMindMap(mapId, ownerId);
 
     const item = await mindMapModel.update({
       where: { id: mapId },
       data: {
         ...(input.title ? { title: input.title } : {}),
-        ...(input.nodes ? { nodes: serializeNodes(input.nodes) } : {}),
+        ...(input.nodes || input.edges
+          ? {
+              nodes: serializeDocument(input.nodes ?? current.map.nodes, input.edges ?? current.map.edges),
+            }
+          : {}),
       },
     });
 

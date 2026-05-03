@@ -10,12 +10,20 @@ export const mindMapNodeSchema = z.object({
   y: z.number().finite().optional(),
 });
 
+export const mindMapEdgeSchema = z.object({
+  id: nonEmptyString,
+  fromNodeId: nonEmptyString,
+  toNodeId: nonEmptyString,
+});
+
 export const createMindMapSchema = z.object({
   title: nonEmptyString,
   nodes: z.array(mindMapNodeSchema).min(1),
+  edges: z.array(mindMapEdgeSchema).default([]),
 });
 
 export const updateMindMapSchema = z.object({
   title: optionalTrimmedString,
   nodes: z.array(mindMapNodeSchema).min(1).optional(),
+  edges: z.array(mindMapEdgeSchema).optional(),
 });

@@ -11,9 +11,16 @@ type MindMapNode = {
   y?: number;
 };
 
+type MindMapEdge = {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+};
+
 type MindMapDocument = {
   title: string;
   nodes: MindMapNode[];
+  edges: MindMapEdge[];
 };
 
 type PositionedNode = MindMapNode & {
@@ -47,6 +54,7 @@ const INITIAL_DOCUMENT: MindMapDocument = {
     { id: "share", label: "Share maps", parentId: "features" },
     { id: "export", label: "Export JSON", parentId: "features" },
   ],
+  edges: [],
 };
 
 function createId() {
@@ -96,6 +104,28 @@ function normalizeNodes(value: unknown) {
   return normalized;
 }
 
+function normalizeEdges(value: unknown, nodes: MindMapNode[]) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const nodeIds = new Set(nodes.map((node) => node.id));
+
+  return value
+    .filter((item): item is Partial<MindMapEdge> => Boolean(item) && typeof item === "object")
+    .map((edge) => ({
+      id: typeof edge.id === "string" ? edge.id : createId(),
+      fromNodeId: typeof edge.fromNodeId === "string" ? edge.fromNodeId : "",
+      toNodeId: typeof edge.toNodeId === "string" ? edge.toNodeId : "",
+    }))
+    .filter(
+      (edge) =>
+        edge.fromNodeId !== edge.toNodeId &&
+        nodeIds.has(edge.fromNodeId) &&
+        nodeIds.has(edge.toNodeId)
+    );
+}
+
 function normalizeDocument(value: unknown): MindMapDocument | null {
   if (Array.isArray(value)) {
     const nodes = normalizeNodes(value);
@@ -104,6 +134,7 @@ function normalizeDocument(value: unknown): MindMapDocument | null {
       ? {
           title: nodes.find((node) => node.parentId === null)?.label ?? "My Mind Map",
           nodes,
+          edges: [],
         }
       : null;
   }
@@ -119,12 +150,15 @@ function normalizeDocument(value: unknown): MindMapDocument | null {
     return null;
   }
 
+  const edges = normalizeEdges(candidate.edges, nodes);
+
   return {
     title:
       typeof candidate.title === "string" && candidate.title.trim()
         ? candidate.title.trim()
         : nodes.find((node) => node.parentId === null)?.label ?? "My Mind Map",
     nodes,
+    edges,
   };
 }
 
@@ -216,8 +250,10 @@ function upsertSummary(items: CloudMapSummary[], nextItem: CloudMapSummary) {
 export default function HomePage() {
   const [title, setTitle] = useState(INITIAL_DOCUMENT.title);
   const [nodes, setNodes] = useState<MindMapNode[]>(INITIAL_DOCUMENT.nodes);
+  const [edges, setEdges] = useState<MindMapEdge[]>(INITIAL_DOCUMENT.edges);
   const [selectedId, setSelectedId] = useState<string>("root");
   const [draftLabel, setDraftLabel] = useState(INITIAL_DOCUMENT.nodes[0]?.label ?? "");
+  const [linkTargetId, setLinkTargetId] = useState("");
   const [importValue, setImportValue] = useState("");
   const [statusMessage, setStatusMessage] = useState("Map autosaves in this browser.");
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -239,6 +275,12 @@ export default function HomePage() {
     [layout.positionedNodes]
   );
   const selectedNode = nodes.find((node) => node.id === selectedId) ?? null;
+  const selectedCrossLinks = edges.filter((edge) => edge.fromNodeId === selectedId);
+  const availableLinkTargets = nodes.filter(
+    (node) =>
+      node.id !== selectedId &&
+      !selectedCrossLinks.some((edge) => edge.toNodeId === node.id)
+  );
   const rootCount = nodes.filter((node) => node.parentId === null).length;
   const leafCount = nodes.filter((node) => !nodes.some((item) => item.parentId === node.id)).length;
   const manualPositionCount = nodes.filter(
@@ -264,6 +306,7 @@ export default function HomePage() {
 
   useEffect(() => {
     setDraftLabel(selectedNode?.label ?? "");
+    setLinkTargetId("");
   }, [selectedNode]);
 
   useEffect(() => {
@@ -278,6 +321,7 @@ export default function HomePage() {
         if (normalized) {
           setTitle(normalized.title);
           setNodes(normalized.nodes);
+          setEdges(normalized.edges);
           setSelectedId(normalized.nodes[0]?.id ?? "root");
           setStatusMessage("Loaded your saved local mind map.");
         }
@@ -312,7 +356,7 @@ export default function HomePage() {
       return;
     }
 
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ title, nodes }));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ title, nodes, edges }));
     window.localStorage.setItem(
       PROFILE_KEY,
       JSON.stringify({
@@ -322,7 +366,7 @@ export default function HomePage() {
         activeCloudMapId,
       })
     );
-  }, [activeCloudMapId, email, hasLoaded, name, nodes, syncEnabled, title]);
+  }, [activeCloudMapId, edges, email, hasLoaded, name, nodes, syncEnabled, title]);
 
   async function authorizedFetch(input: string, init?: RequestInit) {
     const headers = new Headers(init?.headers);
@@ -390,6 +434,7 @@ export default function HomePage() {
     const payload = {
       title: title.trim() || "My Mind Map",
       nodes,
+      edges,
     };
 
     const response = await authorizedFetch(mapId ? `/api/mind-maps/${mapId}` : "/api/mind-maps", {
@@ -398,7 +443,7 @@ export default function HomePage() {
       body: JSON.stringify(payload),
     });
     const body = (await response.json()) as {
-      map?: { id: string; title: string; updatedAt: string; nodes: MindMapNode[] };
+      map?: { id: string; title: string; updatedAt: string; nodes: MindMapNode[]; edges?: MindMapEdge[] };
       error?: string;
     };
 
@@ -421,7 +466,7 @@ export default function HomePage() {
   async function loadCloudMap(mapId: string) {
     const response = await authorizedFetch(`/api/mind-maps/${mapId}`);
     const body = (await response.json()) as {
-      map?: { id: string; title: string; nodes: unknown; updatedAt: string };
+      map?: { id: string; title: string; nodes: unknown; edges?: unknown; updatedAt: string };
       error?: string;
     };
 
@@ -432,6 +477,7 @@ export default function HomePage() {
     const normalized = normalizeDocument({
       title: body.map.title,
       nodes: body.map.nodes,
+      edges: body.map.edges,
     });
 
     if (!normalized) {
@@ -441,6 +487,7 @@ export default function HomePage() {
     skipCloudSaveRef.current = true;
     setTitle(normalized.title);
     setNodes(normalized.nodes);
+    setEdges(normalized.edges);
     setSelectedId(normalized.nodes[0]?.id ?? "root");
     setActiveCloudMapId(body.map.id);
     setCloudStatus(`Loaded cloud map updated ${new Date(body.map.updatedAt).toLocaleString()}.`);
@@ -482,7 +529,7 @@ export default function HomePage() {
     }, 1200);
 
     return () => window.clearTimeout(timer);
-  }, [activeCloudMapId, email, hasLoaded, nodes, syncEnabled, title]);
+  }, [activeCloudMapId, edges, email, hasLoaded, nodes, syncEnabled, title]);
 
   useEffect(() => {
     if (!syncEnabled || !email.trim()) {
@@ -570,7 +617,7 @@ export default function HomePage() {
     window.addEventListener("keydown", handler);
 
     return () => window.removeEventListener("keydown", handler);
-  }, [activeCloudMapId, email, selectedNode, syncEnabled, title, nodes]);
+  }, [activeCloudMapId, edges, email, selectedNode, syncEnabled, title, nodes]);
 
   const addNode = (parentId: string | null) => {
     const newNode: MindMapNode = {
@@ -610,15 +657,60 @@ export default function HomePage() {
     const fallback = selectedNode.parentId ?? nodes.find((node) => node.id !== selectedNode.id)?.id ?? "";
 
     setNodes((current) => current.filter((node) => !idsToDelete.has(node.id)));
+    setEdges((current) =>
+      current.filter(
+        (edge) => !idsToDelete.has(edge.fromNodeId) && !idsToDelete.has(edge.toNodeId)
+      )
+    );
     setSelectedId(fallback);
     setStatusMessage(`Removed "${selectedNode.label}" and its branch.`);
+  };
+
+  const addCrossLink = () => {
+    if (!selectedNode || !linkTargetId) {
+      return;
+    }
+
+    if (
+      edges.some(
+        (edge) => edge.fromNodeId === selectedNode.id && edge.toNodeId === linkTargetId
+      )
+    ) {
+      setStatusMessage("That cross-link already exists.");
+      return;
+    }
+
+    const target = nodes.find((node) => node.id === linkTargetId);
+
+    if (!target) {
+      setStatusMessage("Choose a valid node to link to.");
+      return;
+    }
+
+    setEdges((current) => [
+      ...current,
+      {
+        id: createId(),
+        fromNodeId: selectedNode.id,
+        toNodeId: linkTargetId,
+      },
+    ]);
+    setLinkTargetId("");
+    setStatusMessage(`Linked "${selectedNode.label}" to "${target.label}".`);
+  };
+
+  const removeCrossLink = (edgeId: string) => {
+    setEdges((current) => current.filter((edge) => edge.id !== edgeId));
+    setStatusMessage("Removed extra connection.");
   };
 
   const resetDemo = () => {
     skipCloudSaveRef.current = true;
     setTitle(INITIAL_DOCUMENT.title);
     setNodes(INITIAL_DOCUMENT.nodes);
+    setEdges(INITIAL_DOCUMENT.edges);
     setSelectedId("root");
+    setLinkTargetId("");
     setImportValue("");
     setStatusMessage("Reset to the starter demo map.");
   };
@@ -645,6 +737,7 @@ export default function HomePage() {
       skipCloudSaveRef.current = true;
       setTitle(normalized.title);
       setNodes(normalized.nodes);
+      setEdges(normalized.edges);
       setSelectedId(normalized.nodes[0]?.id ?? "root");
       setStatusMessage("Imported a new map from JSON.");
     } catch {
@@ -711,7 +804,7 @@ export default function HomePage() {
     setStatusMessage(`Renamed node to "${trimmed}".`);
   };
 
-  const exportPayload = JSON.stringify({ title, nodes }, null, 2);
+  const exportPayload = JSON.stringify({ title, nodes, edges }, null, 2);
 
   return (
     <main className="page-shell">
@@ -921,6 +1014,60 @@ export default function HomePage() {
               </button>
             </div>
 
+            <label className="field-label" htmlFor="cross-link-target">
+              Extra connection
+            </label>
+            <select
+              id="cross-link-target"
+              value={linkTargetId}
+              onChange={(event) => setLinkTargetId(event.target.value)}
+            >
+              <option value="">Choose another parent node</option>
+              {availableLinkTargets.map((node) => (
+                <option key={node.id} value={node.id}>
+                  {node.label}
+                </option>
+              ))}
+            </select>
+
+            <div className="button-row">
+              <button disabled={!selectedNode || !linkTargetId} onClick={addCrossLink} type="button">
+                Add link
+              </button>
+              <button
+                className="ghost-button"
+                disabled={!selectedCrossLinks.length}
+                onClick={() => removeCrossLink(selectedCrossLinks[selectedCrossLinks.length - 1].id)}
+                type="button"
+              >
+                Remove last link
+              </button>
+            </div>
+
+            <div className="link-list">
+              <strong>Current links</strong>
+              {selectedCrossLinks.length === 0 ? (
+                <p className="helper-text">No extra parent links for this node yet.</p>
+              ) : (
+                selectedCrossLinks.map((edge) => {
+                  const target = nodes.find((node) => node.id === edge.toNodeId);
+
+                  return (
+                    <div className="link-row" key={edge.id}>
+                      <span>{target?.label ?? edge.toNodeId}</span>
+                      <button
+                        className="ghost-button compact-button"
+                        onClick={() => removeCrossLink(edge.id)}
+                        type="button"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
             <button
               className="danger-button"
               disabled={!selectedNode}
@@ -1010,6 +1157,27 @@ export default function HomePage() {
                       } ${parent.y + NODE_HEIGHT / 2}, ${node.x - 50} ${node.y + NODE_HEIGHT / 2}, ${
                         node.x
                       } ${node.y + NODE_HEIGHT / 2}`}
+                    />
+                  );
+                })}
+
+                {edges.map((edge) => {
+                  const fromNode = positionedById.get(edge.fromNodeId);
+                  const toNode = positionedById.get(edge.toNodeId);
+
+                  if (!fromNode || !toNode) {
+                    return null;
+                  }
+
+                  return (
+                    <path
+                      className="cross-link"
+                      key={edge.id}
+                      d={`M ${fromNode.x + NODE_WIDTH} ${fromNode.y + NODE_HEIGHT / 2} C ${
+                        fromNode.x + NODE_WIDTH + 80
+                      } ${fromNode.y + NODE_HEIGHT / 2 - 28}, ${toNode.x - 80} ${
+                        toNode.y + NODE_HEIGHT / 2 - 28
+                      }, ${toNode.x} ${toNode.y + NODE_HEIGHT / 2}`}
                     />
                   );
                 })}
@@ -1259,6 +1427,26 @@ export default function HomePage() {
           border-top: 1px solid rgba(31, 41, 55, 0.08);
         }
 
+        .link-list {
+          margin-top: 14px;
+          padding: 14px;
+          border-radius: 18px;
+          background: rgba(255, 255, 255, 0.64);
+        }
+
+        .link-row {
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+          align-items: center;
+          margin-top: 10px;
+        }
+
+        .compact-button {
+          padding: 8px 10px;
+          white-space: nowrap;
+        }
+
         .canvas-toolbar {
           display: flex;
           justify-content: space-between;
@@ -1315,6 +1503,12 @@ export default function HomePage() {
           stroke: rgba(28, 52, 117, 0.3);
           stroke-width: 4;
           stroke-linecap: round;
+        }
+
+        .connection-layer path.cross-link {
+          stroke: rgba(208, 98, 38, 0.72);
+          stroke-width: 3;
+          stroke-dasharray: 10 9;
         }
 
         .mind-node {
