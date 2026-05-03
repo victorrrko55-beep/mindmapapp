@@ -756,6 +756,7 @@ export default function HomePage() {
       </section>
 
       <section className="workspace-grid">
+        <div className="controls-grid">
         <aside className="panel">
           <h2>Cloud Sync</h2>
 
@@ -935,7 +936,39 @@ export default function HomePage() {
           </div>
         </aside>
 
-        <section className="canvas-card">
+        <aside className="panel export-panel">
+          <h2>Data</h2>
+          <p className="helper-text">
+            Export and import full map documents. This stays useful even after cloud sync is set up.
+          </p>
+
+          <label className="field-label" htmlFor="export-json">
+            Export JSON
+          </label>
+          <textarea id="export-json" readOnly value={exportPayload} />
+
+          <label className="field-label" htmlFor="import-json">
+            Import JSON
+          </label>
+          <textarea
+            id="import-json"
+            value={importValue}
+            onChange={(event) => setImportValue(event.target.value)}
+            placeholder='Paste {"title":"My Map","nodes":[...]} or a node array'
+          />
+
+          <div className="button-row">
+            <button onClick={importJson} type="button">
+              Import map
+            </button>
+            <button className="ghost-button" onClick={() => setImportValue("")} type="button">
+              Clear box
+            </button>
+          </div>
+        </aside>
+        </div>
+
+        <section className="canvas-card canvas-card--wide">
           <div className="canvas-toolbar">
             <span>Mind map canvas</span>
             <div className="mini-actions">
@@ -1000,37 +1033,6 @@ export default function HomePage() {
             </div>
           </div>
         </section>
-
-        <aside className="panel export-panel">
-          <h2>Data</h2>
-          <p className="helper-text">
-            Export and import full map documents. This stays useful even after cloud sync is set up.
-          </p>
-
-          <label className="field-label" htmlFor="export-json">
-            Export JSON
-          </label>
-          <textarea id="export-json" readOnly value={exportPayload} />
-
-          <label className="field-label" htmlFor="import-json">
-            Import JSON
-          </label>
-          <textarea
-            id="import-json"
-            value={importValue}
-            onChange={(event) => setImportValue(event.target.value)}
-            placeholder='Paste {"title":"My Map","nodes":[...]} or a node array'
-          />
-
-          <div className="button-row">
-            <button onClick={importJson} type="button">
-              Import map
-            </button>
-            <button className="ghost-button" onClick={() => setImportValue("")} type="button">
-              Clear box
-            </button>
-          </div>
-        </aside>
       </section>
 
       <style jsx>{`
@@ -1140,7 +1142,12 @@ export default function HomePage() {
 
         .workspace-grid {
           display: grid;
-          grid-template-columns: 320px minmax(0, 1fr) 320px;
+          gap: 20px;
+        }
+
+        .controls-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(320px, 1fr));
           gap: 20px;
           align-items: start;
         }
@@ -1157,6 +1164,10 @@ export default function HomePage() {
         .canvas-card {
           padding: 18px;
           min-height: 760px;
+        }
+
+        .canvas-card--wide {
+          min-width: 0;
         }
 
         h2,
@@ -1333,17 +1344,12 @@ export default function HomePage() {
         }
 
         .export-panel {
-          min-height: 760px;
+          min-height: 0;
         }
 
         @media (max-width: 1200px) {
-          .workspace-grid {
+          .controls-grid {
             grid-template-columns: 1fr;
-          }
-
-          .canvas-card,
-          .export-panel {
-            min-height: 0;
           }
 
           textarea {
