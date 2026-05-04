@@ -40,6 +40,7 @@ const HORIZONTAL_GAP = 260;
 const VERTICAL_GAP = 112;
 const NODE_WIDTH = 180;
 const NODE_HEIGHT = 60;
+const NODE_DRAG_THRESHOLD = 10;
 const STORAGE_KEY = "building-mind-map.v2";
 const PROFILE_KEY = "building-mind-map.profile";
 const INITIAL_DOCUMENT: MindMapDocument = {
@@ -290,6 +291,7 @@ export default function HomePage() {
   const [importValue, setImportValue] = useState("");
   const [statusMessage, setStatusMessage] = useState("Map autosaves in this browser.");
   const [hasLoaded, setHasLoaded] = useState(false);
+  const [pendingDragId, setPendingDragId] = useState<string | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [draggedEdgeId, setDraggedEdgeId] = useState<string | null>(null);
   const [email, setEmail] = useState("");
@@ -300,7 +302,15 @@ export default function HomePage() {
   const [cloudStatus, setCloudStatus] = useState("Cloud sync is off.");
 
   const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const pendingDragRef = useRef({
+    pointerId: -1,
+    startClientX: 0,
+    startClientY: 0,
+    offsetX: 0,
+    offsetY: 0,
+  });
   const edgeDragOffsetRef = useRef({ x: 0, y: 0 });
+  const canvasScrollRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const skipCloudSaveRef = useRef(false);
 
@@ -577,7 +587,7 @@ export default function HomePage() {
   }, [email, syncEnabled]);
 
   useEffect(() => {
-    if (!draggedId) {
+    if (!pendingDragId && !draggedId) {
       return;
     }
 
@@ -589,12 +599,39 @@ export default function HomePage() {
       }
 
       const rect = stage.getBoundingClientRect();
+      const activeNodeId = draggedId ?? pendingDragId;
+
+      if (!activeNodeId) {
+        return;
+      }
+
+      if (!draggedId) {
+        if (event.pointerId !== pendingDragRef.current.pointerId) {
+          return;
+        }
+
+        const deltaX = event.clientX - pendingDragRef.current.startClientX;
+        const deltaY = event.clientY - pendingDragRef.current.startClientY;
+
+        if (Math.hypot(deltaX, deltaY) < NODE_DRAG_THRESHOLD) {
+          return;
+        }
+
+        dragOffsetRef.current = {
+          x: pendingDragRef.current.offsetX,
+          y: pendingDragRef.current.offsetY,
+        };
+        setDraggedId(activeNodeId);
+        setPendingDragId(null);
+        setStatusMessage("Dragging node...");
+      }
+
       const nextX = Math.max(0, event.clientX - rect.left - dragOffsetRef.current.x);
       const nextY = Math.max(0, event.clientY - rect.top - dragOffsetRef.current.y);
 
       setNodes((current) =>
         current.map((node) =>
-          node.id === draggedId
+          node.id === activeNodeId
             ? {
                 ...node,
                 x: Math.round(nextX),
@@ -605,9 +642,16 @@ export default function HomePage() {
       );
     };
 
-    const handlePointerUp = () => {
-      setDraggedId(null);
-      setStatusMessage("Moved node and saved its position.");
+    const handlePointerUp = (event: PointerEvent) => {
+      if (draggedId) {
+        setDraggedId(null);
+        setStatusMessage("Moved node and saved its position.");
+        return;
+      }
+
+      if (pendingDragId && event.pointerId === pendingDragRef.current.pointerId) {
+        setPendingDragId(null);
+      }
     };
 
     window.addEventListener("pointermove", handlePointerMove);
@@ -617,7 +661,7 @@ export default function HomePage() {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [draggedId]);
+  }, [draggedId, pendingDragId]);
 
   useEffect(() => {
     if (!draggedEdgeId) {
@@ -659,6 +703,54 @@ export default function HomePage() {
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [draggedEdgeId]);
+
+  useEffect(() => {
+    if (!draggedEdgeId) {
+      return;
+    }
+
+    const html = document.documentElement;
+    const body = document.body;
+    const canvasScroll = canvasScrollRef.current;
+    const previousHtmlOverflow = html.style.overflow;
+    const previousBodyOverflow = body.style.overflow;
+    const previousHtmlTouchAction = html.style.touchAction;
+    const previousBodyTouchAction = body.style.touchAction;
+    const previousCanvasOverflow = canvasScroll?.style.overflow ?? "";
+    const previousCanvasTouchAction = canvasScroll?.style.touchAction ?? "";
+    const previousCanvasOverscrollBehavior = canvasScroll?.style.overscrollBehavior ?? "";
+
+    html.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+    html.style.touchAction = "none";
+    body.style.touchAction = "none";
+
+    if (canvasScroll) {
+      canvasScroll.style.overflow = "hidden";
+      canvasScroll.style.touchAction = "none";
+      canvasScroll.style.overscrollBehavior = "none";
+    }
+
+    const preventTouchMove = (event: TouchEvent) => {
+      event.preventDefault();
+    };
+
+    window.addEventListener("touchmove", preventTouchMove, { passive: false });
+
+    return () => {
+      window.removeEventListener("touchmove", preventTouchMove);
+      html.style.overflow = previousHtmlOverflow;
+      body.style.overflow = previousBodyOverflow;
+      html.style.touchAction = previousHtmlTouchAction;
+      body.style.touchAction = previousBodyTouchAction;
+
+      if (canvasScroll) {
+        canvasScroll.style.overflow = previousCanvasOverflow;
+        canvasScroll.style.touchAction = previousCanvasTouchAction;
+        canvasScroll.style.overscrollBehavior = previousCanvasOverscrollBehavior;
+      }
     };
   }, [draggedEdgeId]);
 
@@ -849,14 +941,16 @@ export default function HomePage() {
 
     const rect = stage.getBoundingClientRect();
 
-    dragOffsetRef.current = {
-      x: event.clientX - rect.left - position.x,
-      y: event.clientY - rect.top - position.y,
+    pendingDragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      offsetX: event.clientX - rect.left - position.x,
+      offsetY: event.clientY - rect.top - position.y,
     };
 
     setSelectedId(nodeId);
-    setDraggedId(nodeId);
-    setStatusMessage("Dragging node...");
+    setPendingDragId(nodeId);
   };
 
   const startEdgeDrag = (
@@ -871,7 +965,9 @@ export default function HomePage() {
       return;
     }
 
+    event.preventDefault();
     event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
 
     const rect = stage.getBoundingClientRect();
 
@@ -1239,7 +1335,10 @@ export default function HomePage() {
             </div>
           </div>
 
-          <div className="canvas-scroll">
+          <div
+            className={`canvas-scroll ${draggedEdgeId ? "drag-locked" : ""}`}
+            ref={canvasScrollRef}
+          >
             <div
               className="canvas-stage"
               ref={stageRef}
@@ -1604,6 +1703,12 @@ export default function HomePage() {
             );
         }
 
+        .canvas-scroll.drag-locked {
+          overflow: hidden;
+          touch-action: none;
+          overscroll-behavior: none;
+        }
+
         .canvas-stage {
           position: relative;
           user-select: none;
@@ -1633,6 +1738,7 @@ export default function HomePage() {
           stroke: rgba(255, 248, 234, 0.96);
           stroke-width: 3;
           cursor: grab;
+          touch-action: none;
         }
 
         .cross-link-handle--active {
