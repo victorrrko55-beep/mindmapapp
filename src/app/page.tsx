@@ -252,6 +252,31 @@ function upsertSummary(items: CloudMapSummary[], nextItem: CloudMapSummary) {
   return [nextItem, ...remaining].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+function formatCloudMapDate(updatedAt: string) {
+  return new Date(updatedAt).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatCloudMapLabel(item: CloudMapSummary) {
+  return `${item.title} · ${formatCloudMapDate(item.updatedAt)}`;
+}
+
+function createUniqueCloudMapTitle(rawTitle: string, items: CloudMapSummary[]) {
+  const baseTitle = rawTitle.trim() || "My Mind Map";
+  const normalizedBase = baseTitle.toLowerCase();
+  const duplicateExists = items.some((item) => item.title.trim().toLowerCase() === normalizedBase);
+
+  if (!duplicateExists) {
+    return baseTitle;
+  }
+
+  return `${baseTitle} · ${formatCloudMapDate(new Date().toISOString())}`;
+}
+
 function getCrossLinkGeometry(
   edge: MindMapEdge,
   positionedById: Map<string, PositionedNode>
@@ -476,8 +501,12 @@ export default function HomePage() {
       return null;
     }
 
+    const nextTitle = mapId
+      ? title.trim() || "My Mind Map"
+      : createUniqueCloudMapTitle(title, cloudMaps);
+
     const payload = {
-      title: title.trim() || "My Mind Map",
+      title: nextTitle,
       nodes,
       edges,
     };
@@ -504,6 +533,7 @@ export default function HomePage() {
         updatedAt: body.map!.updatedAt,
       })
     );
+    setTitle(body.map.title);
     setCloudStatus(`Cloud saved at ${new Date(body.map.updatedAt).toLocaleString()}.`);
     return body.map.id;
   }
@@ -1125,7 +1155,7 @@ export default function HomePage() {
             <option value="">Choose a map</option>
             {cloudMaps.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.title}
+                {formatCloudMapLabel(item)}
               </option>
             ))}
           </select>
