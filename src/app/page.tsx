@@ -714,10 +714,16 @@ export default function HomePage() {
     const html = document.documentElement;
     const body = document.body;
     const canvasScroll = canvasScrollRef.current;
+    const scrollY = window.scrollY;
     const previousHtmlOverflow = html.style.overflow;
     const previousBodyOverflow = body.style.overflow;
     const previousHtmlTouchAction = html.style.touchAction;
     const previousBodyTouchAction = body.style.touchAction;
+    const previousBodyPosition = body.style.position;
+    const previousBodyTop = body.style.top;
+    const previousBodyLeft = body.style.left;
+    const previousBodyRight = body.style.right;
+    const previousBodyWidth = body.style.width;
     const previousCanvasOverflow = canvasScroll?.style.overflow ?? "";
     const previousCanvasTouchAction = canvasScroll?.style.touchAction ?? "";
     const previousCanvasOverscrollBehavior = canvasScroll?.style.overscrollBehavior ?? "";
@@ -726,6 +732,11 @@ export default function HomePage() {
     body.style.overflow = "hidden";
     html.style.touchAction = "none";
     body.style.touchAction = "none";
+    body.style.position = "fixed";
+    body.style.top = `-${scrollY}px`;
+    body.style.left = "0";
+    body.style.right = "0";
+    body.style.width = "100%";
 
     if (canvasScroll) {
       canvasScroll.style.overflow = "hidden";
@@ -745,6 +756,12 @@ export default function HomePage() {
       body.style.overflow = previousBodyOverflow;
       html.style.touchAction = previousHtmlTouchAction;
       body.style.touchAction = previousBodyTouchAction;
+      body.style.position = previousBodyPosition;
+      body.style.top = previousBodyTop;
+      body.style.left = previousBodyLeft;
+      body.style.right = previousBodyRight;
+      body.style.width = previousBodyWidth;
+      window.scrollTo({ left: 0, top: scrollY });
 
       if (canvasScroll) {
         canvasScroll.style.overflow = previousCanvasOverflow;
@@ -954,7 +971,7 @@ export default function HomePage() {
   };
 
   const startEdgeDrag = (
-    event: ReactPointerEvent<SVGCircleElement>,
+    event: ReactPointerEvent<SVGElement>,
     edgeId: string,
     controlX: number,
     controlY: number
@@ -1375,13 +1392,25 @@ export default function HomePage() {
                     return null;
                   }
 
+                  const pathData = `M ${geometry.startX} ${geometry.startY} Q ${geometry.controlX} ${
+                    geometry.controlY
+                  } ${geometry.endX} ${geometry.endY}`;
+
                   return (
                     <g key={edge.id}>
                       <path
+                        className="cross-link-hit"
+                        d={pathData}
+                        onPointerDown={(event) =>
+                          startEdgeDrag(event, edge.id, geometry.controlX, geometry.controlY)
+                        }
+                      />
+                      <path
                         className="cross-link"
-                        d={`M ${geometry.startX} ${geometry.startY} Q ${geometry.controlX} ${
-                          geometry.controlY
-                        } ${geometry.endX} ${geometry.endY}`}
+                        d={pathData}
+                        onPointerDown={(event) =>
+                          startEdgeDrag(event, edge.id, geometry.controlX, geometry.controlY)
+                        }
                       />
                       <circle
                         className={`cross-link-handle ${
@@ -1720,6 +1749,10 @@ export default function HomePage() {
           overflow: visible;
         }
 
+        .canvas-scroll.drag-locked .connection-layer {
+          touch-action: none;
+        }
+
         .connection-layer path {
           fill: none;
           stroke: rgba(28, 52, 117, 0.3);
@@ -1731,6 +1764,13 @@ export default function HomePage() {
           stroke: rgba(208, 98, 38, 0.72);
           stroke-width: 3;
           stroke-dasharray: 10 9;
+        }
+
+        .connection-layer path.cross-link-hit {
+          stroke: transparent;
+          stroke-width: 28;
+          touch-action: none;
+          cursor: grab;
         }
 
         .cross-link-handle {
